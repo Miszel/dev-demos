@@ -1,0 +1,29 @@
+# Gradle
+.gradle/
+build/
+out/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+log/
+logs/
+
+# Java
+target/
+*.class
+
+# Node
+node_modules/
+dist/

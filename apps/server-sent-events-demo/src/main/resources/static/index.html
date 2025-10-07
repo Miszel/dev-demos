@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="pl">
+<head>
+    <meta charset="utf-8"/>
+    <title>SSE Demo – sender & receiver</title>
+    <style>
+        :root { font-family: system-ui, sans-serif; }
+        body { margin: 2rem; }
+        .grid { display: grid; gap: 1.25rem; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+        .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 1rem; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+        .card h2 { margin: 0 0 .75rem 0; font-size: 1.1rem; }
+        .row { display: flex; gap: .5rem; align-items: center; margin: .5rem 0; flex-wrap: wrap; }
+        input[type="text"] { padding: .5rem .6rem; border: 1px solid #d1d5db; border-radius: 8px; flex: 1; min-width: 140px; }
+        textarea { width: 100%; height: 140px; padding: .6rem; border: 1px solid #d1d5db; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+        button { padding: .5rem .8rem; border: 1px solid #d1d5db; border-radius: 8px; background: #f8fafc; cursor: pointer; }
+        button:disabled { opacity: .6; cursor: not-allowed; }
+        .log { white-space: pre-wrap; border: 1px solid #e5e7eb; padding: .75rem; border-radius: 8px; background: #fcfcfc; height: 260px; overflow: auto; }
+        .muted { color: #6b7280; font-size: .9rem; }
+        .ok { color: #166534; }
+        .err { color: #991b1b; }
+        .badge { display: inline-block; padding: .1rem .4rem; border-radius: 6px; background: #eef2ff; border: 1px solid #c7d2fe; font-size: .8rem; }
+    </style>
+</head>
+<body>
+<h1>SSE Demo</h1>
+<p class="muted">Dwa panele: <span class="badge">Nadawca</span> publikuje zdarzenia na <code>/sse/publish</code>, a <span class="badge">Odbiorca</span> słucha <code>/sse/stream</code>.</p>
+
+<div class="grid">
+    <!-- NADAWCA -->
+    <section class="card">
+        <h2>Nadawca (POST /sse/publish)</h2>
+
+        <div class="row">
+            <label for="evtType" class="muted">Typ zdarzenia (event):</label>
+            <input id="evtType" type="text" placeholder="np. message, alert, update" value="message">
+        </div>
+
+        <div class="row">
+            <label for="payload" class="muted">Payload (JSON):</label>
+        </div>
+        <textarea id="payload">{
+  "text": "Hello from sender panel"
+}</textarea>
+
+        <div class="row">
+            <button id="sendBtn">Wyślij zdarzenie</button>
+            <span id="sendStatus" class="muted"></span>
+        </div>
+        <p class="muted">W backendzie <code>type</code> zostanie użyty jako <code>event:</code>, a cały payload trafi do pola <code>payload</code> w SSE.</p>
+    </section>
+
+    <!-- ODBIORCA -->
+    <section class="card">
+        <h2>Odbiorca (/sse/stream)</h2>
+        <div class="row">
+            <button id="connectStream">Połącz</button>
+            <button id="disconnectStream" disabled>Rozłącz</button>
+            <label class="muted"><input type="checkbox" id="showRaw"> pokaż surowe zdarzenia</label>
+        </div>
+
+        <div class="log" id="streamLog"></div>
+        <div class="row">
+            <button id="clearLog">Wyczyść log</button>
+            <span id="connStatus" class="muted"></span>
+        </div>
+    </section>
+</div>
+
+<!-- Dodatkowo – panel do /sse/ticks (opcjonalny) -->
+<section class="card" style="margin-top:1.25rem;">
+    <h2>Opcjonalnie: Ticks (/sse/ticks)</h2>
+    <div class="row">
+        <button id="connectTicks">Połącz</button>
+        <button id="disconnectTicks" disabled>Rozłącz</button>
+        <span id="ticksStatus" class="muted"></span>
+    </div>
+    <div class="log" id="ticksLog"></div>
+</section>
+
+<script>
+    // ---------- Utilities ----------
+    const $ = (id) => document.getElementById(id);
+    const now = () => new Date().toISOString().replace('T', ' ').replace('Z','Z');
+    const logLine = (el, msg) => { el.textContent += msg + "\n"; el.scrollTop = el.scrollHeight; };
+
+    // ---------- Sender ----------
+    $('sendBtn').onclick = async () => {
+      const type = $('evtType').value.trim() || 'message';
+      let json;
+      try {
+        json = JSON.parse($('payload').value || '{}');
+      } catch (e) {
+        $('sendStatus').textContent = 'Błędny JSON';
+        $('sendStatus').className = 'err';
+        return;
+      }
+      $('sendStatus').textContent = 'Wysyłanie...';
+      $('sendStatus').className = 'muted';
+      try {
+        const res = await fetch('/sse/publish', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type, ...json })
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        $('sendStatus').textContent = 'Wysłano ✓';
+        $('sendStatus').className = 'ok';
+      } catch (e) {
+        $('sendStatus').textContent = 'Błąd wysyłki: ' + e.message;
+        $('sendStatus').className = 'err';
+      }
+      setTimeout(() => { $('sendStatus').textContent = ''; $('sendStatus').className = 'muted'; }, 2000);
+    };
+
+    // ---------- Receiver (/sse/stream) ----------
+    let streamES = null;
+    const streamLog = $('streamLog');
+    const setStreamUi = (connected) => {
+      $('connectStream').disabled = connected;
+      $('disconnectStream').disabled = !connected;
+      $('connStatus').textContent = connected ? 'Połączono' : 'Rozłączono';
+      $('connStatus').className = connected ? 'ok' : 'muted';
+    };
+    $('connectStream').onclick = () => {
+      if (streamES) return;
+      streamES = new EventSource('/sse/stream');
+      setStreamUi(true);
+      streamES.onopen = () => logLine(streamLog, `[${now()}] [stream] opened`);
+      streamES.onmessage = (e) => {
+        if ($('showRaw').checked) {
+          logLine(streamLog, `[${now()}] [stream:onmessage] ${e.data}`);
+        } else {
+          // Oczekujemy struktury {payload:{...}, time: "..."} z backendu
+          try {
+            const data = JSON.parse(e.data);
+            logLine(streamLog, `[${now()}] event=message payload=${JSON.stringify(data.payload)}`);
+          } catch {
+            logLine(streamLog, `[${now()}] event=message raw=${e.data}`);
+          }
+        }
+      };
+      // Gdy backend użyje event: <type>, można też dodać nasłuch:
+      const types = ['message','alert','update'];
+      types.forEach(t => {
+        streamES.addEventListener(t, (e) => {
+          logLine(streamLog, `[${now()}] event=${t} data=${e.data}`);
+        });
+      });
+      streamES.onerror = () => logLine(streamLog, `[${now()}] [stream] error`);
+    };
+    $('disconnectStream').onclick = () => {
+      if (!streamES) return;
+      streamES.close();
+      streamES = null;
+      setStreamUi(false);
+      logLine(streamLog, `[${now()}] [stream] closed by client`);
+    };
+    $('clearLog').onclick = () => streamLog.textContent = '';
+
+    // ---------- Ticks (/sse/ticks) ----------
+    let ticksES = null;
+    const ticksLog = $('ticksLog');
+    const setTicksUi = (connected) => {
+      $('connectTicks').disabled = connected;
+      $('disconnectTicks').disabled = !connected;
+      $('ticksStatus').textContent = connected ? 'Połączono' : 'Rozłączono';
+      $('ticksStatus').className = connected ? 'ok' : 'muted';
+    };
+    $('connectTicks').onclick = () => {
+      if (ticksES) return;
+      ticksES = new EventSource('/sse/ticks');
+      setTicksUi(true);
+      ticksES.onopen = () => logLine(ticksLog, `[${now()}] [ticks] opened`);
+      ticksES.addEventListener('tick', (e) => logLine(ticksLog, `[${now()}] tick ${e.data}`));
+      ticksES.onmessage = (e) => logLine(ticksLog, `[${now()}] message ${e.data}`);
+      ticksES.onerror = () => logLine(ticksLog, `[${now()}] [ticks] error`);
+    };
+    $('disconnectTicks').onclick = () => {
+      if (!ticksES) return;
+      ticksES.close();
+      ticksES = null;
+      setTicksUi(false);
+      logLine(ticksLog, `[${now()}] [ticks] closed by client`);
+    };
+
+    // ---------- Cleanup ----------
+    window.addEventListener('beforeunload', () => {
+      if (ticksES) ticksES.close();
+      if (streamES) streamES.close();
+    });
+
+    // startowy stan
+    setStreamUi(false);
+    setTicksUi(false);
+</script>
+</body>
+</html>
