@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="pl">
+<head>
+    <meta charset="utf-8"/>
+    <title>WebSockets Demo</title>
+    <style>
+        body { font-family: system-ui, sans-serif; margin: 2rem; }
+        .row { display:flex; gap:.5rem; margin:.5rem 0; }
+        #log { white-space: pre-wrap; border:1px solid #ddd; padding:1rem; border-radius:8px; height:240px; overflow:auto; }
+    </style>
+</head>
+<body>
+<h1>WebSockets – echo demo</h1>
+
+<div class="row">
+    <button id="connect">Connect</button>
+    <button id="disconnect" disabled>Disconnect</button>
+</div>
+
+<div class="row">
+    <input id="msg" placeholder="Type a message" style="flex:1"/>
+    <button id="send" disabled>Send</button>
+</div>
+
+<pre id="log"></pre>
+
+<script>
+    let ws = null;
+    const $ = (id) => document.getElementById(id);
+    const log = (m) => { $('log').textContent += m + "\n"; $('log').scrollTop = $('log').scrollHeight; };
+
+    const setUi = (connected) => {
+      $('connect').disabled = connected;
+      $('disconnect').disabled = !connected;
+      $('send').disabled = !connected;
+    };
+
+    $('connect').onclick = () => {
+      if (ws) return;
+      const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/echo';
+      ws = new WebSocket(url);
+      ws.onopen = () => { log('[open] connected'); setUi(true); };
+      ws.onmessage = (e) => log('[message] ' + e.data);
+      ws.onclose = () => { log('[close] disconnected'); ws = null; setUi(false); };
+      ws.onerror = (e) => log('[error] ' + e.message);
+    };
+
+    $('disconnect').onclick = () => {
+      if (!ws) return;
+      ws.close(1000, 'client closing');
+    };
+
+    $('send').onclick = () => {
+      if (!ws) return;
+      const m = $('msg').value || '(empty)';
+      ws.send(m);
+      log('[send] ' + m);
+    };
+
+    window.addEventListener('beforeunload', () => { if (ws) ws.close(); });
+    setUi(false);
+</script>
+</body>
+</html>

@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <title>OAuth2 PKCE Demo</title>
+    <style>
+        body { font-family: system-ui, sans-serif; margin: 2rem; }
+        .row { display: flex; gap: .5rem; margin: .5rem 0; flex-wrap: wrap; }
+        #log { white-space: pre-wrap; border: 1px solid #ddd; padding: 1rem; border-radius: 8px; height: 260px; overflow: auto; font-family: ui-monospace, monospace; font-size: .9rem; }
+        #result { white-space: pre-wrap; border: 1px solid #ddd; padding: 1rem; border-radius: 8px; min-height: 80px; font-family: ui-monospace, monospace; font-size: .9rem; }
+        button { padding: .4rem .8rem; border: 1px solid #ccc; border-radius: 6px; background: #f8f8f8; cursor: pointer; }
+        button:disabled { opacity: .5; cursor: not-allowed; }
+        h2 { margin: 1rem 0 .25rem; font-size: 1rem; color: #555; }
+    </style>
+</head>
+<body>
+<h1>OAuth2 Authorization Code + PKCE Demo</h1>
+<p>Single Spring Boot process acting as both Authorization Server and Resource Server.<br>
+   Credentials: <code>user</code> / <code>password</code></p>
+
+<div class="row">
+    <button id="startBtn">Start OAuth2 Flow</button>
+    <button id="callBtn" disabled>Call /api/me</button>
+    <button id="clearBtn">Clear</button>
+</div>
+
+<h2>Event log</h2>
+<pre id="log"></pre>
+
+<h2>/api/me response</h2>
+<pre id="result"></pre>
+
+<script>
+    const $ = id => document.getElementById(id);
+    const log = m => { $('log').textContent += m + '\n'; $('log').scrollTop = $('log').scrollHeight; };
+
+    // ── PKCE helpers ────────────────────────────────────────────────────────
+    function base64url(buf) {
+        return btoa(String.fromCharCode(...new Uint8Array(buf)))
+            .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    }
+
+    async function generatePkce() {
+        const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)));
+        const challenge = base64url(
+            await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))
+        );
+        return { verifier, challenge };
+    }
+
+    // ── Callback detection (runs on every page load) ─────────────────────
+    (async () => {
+        const params = new URLSearchParams(location.search);
+        if (!params.has('code')) return;
+
+        log('Step 3: authorization code received from AS');
+
+        const code     = params.get('code');
+        const state    = params.get('state');
+        const verifier = sessionStorage.getItem('pkce_verifier');
+        const savedState = sessionStorage.getItem('oauth_state');
+
+        if (state !== savedState) {
+            log('ERROR: state mismatch — possible CSRF, aborting');
+            return;
+        }
+
+        // Clean up URL so the code isn't re-used on refresh
+        history.replaceState({}, '', '/');
+
+        log('Step 4: exchanging authorization code for tokens...');
+        const body = new URLSearchParams({
+            grant_type:    'authorization_code',
+            client_id:     'spa-client',
+            code,
+            redirect_uri:  'http://localhost:8080/',
+            code_verifier: verifier,
+        });
+
+        try {
+            const resp = await fetch('/oauth2/token', { method: 'POST', body });
+            if (!resp.ok) {
+                const err = await resp.text();
+                log('ERROR: token endpoint returned ' + resp.status + ' — ' + err);
+                return;
+            }
+            const tokens = await resp.json();
+            sessionStorage.setItem('access_token', tokens.access_token);
+            log('Step 4 complete: access_token stored in sessionStorage');
+            $('callBtn').disabled = false;
+            await callApi();
+        } catch (e) {
+            log('ERROR: ' + e.message);
+        }
+    })();
+
+    // ── Start flow ───────────────────────────────────────────────────────
+    $('startBtn').onclick = async () => {
+        log('Step 1: generating PKCE code_verifier and code_challenge...');
+        const { verifier, challenge } = await generatePkce();
+        const state = crypto.randomUUID();
+        sessionStorage.setItem('pkce_verifier', verifier);
+        sessionStorage.setItem('oauth_state', state);
+        log('Step 1 complete: code_challenge (S256) = ' + challenge);
+
+        const url = new URL('/oauth2/authorize', location.origin);
+        url.searchParams.set('response_type',         'code');
+        url.searchParams.set('client_id',             'spa-client');
+        url.searchParams.set('redirect_uri',          'http://localhost:8080/');
+        url.searchParams.set('scope',                 'openid profile');
+        url.searchParams.set('state',                 state);
+        url.searchParams.set('code_challenge',        challenge);
+        url.searchParams.set('code_challenge_method', 'S256');
+
+        log('Step 2: redirecting to authorization endpoint...');
+        location.href = url.toString();
+    };
+
+    // ── Call protected API ───────────────────────────────────────────────
+    async function callApi() {
+        const token = sessionStorage.getItem('access_token');
+        if (!token) { log('No token — run the OAuth2 flow first'); return; }
+        log('Step 5: calling GET /api/me with Bearer token...');
+        try {
+            const resp = await fetch('/api/me', {
+                headers: { Authorization: 'Bearer ' + token }
+            });
+            if (!resp.ok) {
+                log('ERROR: /api/me returned ' + resp.status);
+                return;
+            }
+            const data = await resp.json();
+            log('Step 6: /api/me responded successfully');
+            $('result').textContent = JSON.stringify(data, null, 2);
+            $('callBtn').disabled = false;
+        } catch (e) {
+            log('ERROR: ' + e.message);
+        }
+    }
+
+    $('callBtn').onclick = callApi;
+
+    $('clearBtn').onclick = () => {
+        sessionStorage.clear();
+        $('log').textContent = '';
+        $('result').textContent = '';
+        $('callBtn').disabled = true;
+        history.replaceState({}, '', '/');
+    };
+
+    // Enable call button if a token already exists from a prior flow
+    if (sessionStorage.getItem('access_token')) $('callBtn').disabled = false;
+</script>
+</body>
+</html>
